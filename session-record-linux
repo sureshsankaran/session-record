@@ -19,7 +19,6 @@ set -euo pipefail
 
 LOG_DIR="$HOME/.session-logs"
 ACTIVE_FILE="$LOG_DIR/.active-linux"
-ACTIVE_PID_FILE="$LOG_DIR/.active-linux.pid"
 
 mkdir -p "$LOG_DIR"
 
@@ -62,30 +61,19 @@ require_linux_tools() {
 }
 
 cleanup_active_state() {
-  rm -f "$ACTIVE_FILE" "$ACTIVE_PID_FILE"
-}
-
-active_pid() {
-  [[ -f "$ACTIVE_PID_FILE" ]] || return 1
-  cat "$ACTIVE_PID_FILE"
-}
-
-is_pid_running() {
-  local pid="${1:-}"
-  [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" 2>/dev/null
+  rm -f "$ACTIVE_FILE"
 }
 
 refresh_active_state() {
   [[ -f "$ACTIVE_FILE" ]] || return 0
+  local name logfile
+  name=$(cat "$ACTIVE_FILE")
+  logfile=$(session_file "$name")
 
-  local pid=""
-  pid=$(active_pid 2>/dev/null || true)
-  if [[ -n "$pid" ]] && is_pid_running "$pid"; then
-    return 0
+  # If the most recent line shows script completed, the active marker is stale.
+  if [[ -f "$logfile" ]] && tail -n 1 "$logfile" 2>/dev/null | grep -q '^Script done on '; then
+    cleanup_active_state
   fi
-
-  cleanup_active_state
 }
 
 cmd_start() {
@@ -115,10 +103,7 @@ cmd_start() {
 
   # Older Linux script variants write terminal output to the positional file
   # argument and timing data via -t/--timing.
-  script --quiet --flush --timing="$timingfile" "$logfile" &
-  local script_pid=$!
-  echo "$script_pid" > "$ACTIVE_PID_FILE"
-  wait "$script_pid"
+  script --quiet --flush --timing="$timingfile" "$logfile"
 
   echo ""
   info "recording stopped -> $name"
@@ -135,23 +120,11 @@ cmd_stop() {
     return 0
   fi
 
-  local name pid
+  local name
   name=$(cat "$ACTIVE_FILE")
-  pid=$(active_pid 2>/dev/null || true)
-
-  if [[ -n "$pid" ]] && is_pid_running "$pid"; then
-    kill -TERM "$pid" 2>/dev/null || true
-    sleep 1
-    if is_pid_running "$pid"; then
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-    cleanup_active_state
-    info "stopped recording '$name'"
-    return 0
-  fi
-
-  cleanup_active_state
-  info "cleared stale recording marker for '$name'"
+  info "active session: '$name'"
+  info "to stop it, type 'exit' or press Ctrl-D in the recorded shell."
+  info "the recording shell is the innermost shell you're in."
 }
 
 cmd_list() {
