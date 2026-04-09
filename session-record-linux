@@ -19,6 +19,7 @@ set -euo pipefail
 
 LOG_DIR="$HOME/.session-logs"
 ACTIVE_FILE="$LOG_DIR/.active-linux"
+ACTIVE_PID_FILE="$LOG_DIR/.active-linux.pid"
 
 mkdir -p "$LOG_DIR"
 
@@ -60,6 +61,33 @@ require_linux_tools() {
   command -v scriptreplay >/dev/null 2>&1 || die "'scriptreplay' is not installed"
 }
 
+cleanup_active_state() {
+  rm -f "$ACTIVE_FILE" "$ACTIVE_PID_FILE"
+}
+
+active_pid() {
+  [[ -f "$ACTIVE_PID_FILE" ]] || return 1
+  cat "$ACTIVE_PID_FILE"
+}
+
+is_pid_running() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+refresh_active_state() {
+  [[ -f "$ACTIVE_FILE" ]] || return 0
+
+  local pid=""
+  pid=$(active_pid 2>/dev/null || true)
+  if [[ -n "$pid" ]] && is_pid_running "$pid"; then
+    return 0
+  fi
+
+  cleanup_active_state
+}
+
 cmd_start() {
   local name="${1:-$(date '+%Y-%m-%d_%H%M%S')}"
   local logfile timingfile
@@ -67,6 +95,7 @@ cmd_start() {
   timingfile=$(timing_file "$name")
 
   require_linux_tools
+  refresh_active_state
 
   if [[ -f "$ACTIVE_FILE" ]]; then
     local current
@@ -75,6 +104,7 @@ cmd_start() {
   fi
 
   echo "$name" > "$ACTIVE_FILE"
+  trap cleanup_active_state EXIT INT TERM
 
   info "recording started -> $name"
   info "log file: $logfile"
@@ -85,9 +115,10 @@ cmd_start() {
 
   # Older Linux script variants write terminal output to the positional file
   # argument and timing data via -t/--timing.
-  script --quiet --flush --timing="$timingfile" "$logfile"
-
-  rm -f "$ACTIVE_FILE"
+  script --quiet --flush --timing="$timingfile" "$logfile" &
+  local script_pid=$!
+  echo "$script_pid" > "$ACTIVE_PID_FILE"
+  wait "$script_pid"
 
   echo ""
   info "recording stopped -> $name"
@@ -97,22 +128,36 @@ cmd_start() {
 }
 
 cmd_stop() {
+  refresh_active_state
+
   if [[ ! -f "$ACTIVE_FILE" ]]; then
     info "no active recording. Nothing to stop."
-    info "if you're inside a recording, just type 'exit' or press Ctrl-D."
     return 0
   fi
 
-  local name
+  local name pid
   name=$(cat "$ACTIVE_FILE")
-  info "active session: '$name'"
-  info "to stop it, type 'exit' or press Ctrl-D in the recorded shell."
-  info "the recording shell is the innermost shell you're in."
+  pid=$(active_pid 2>/dev/null || true)
+
+  if [[ -n "$pid" ]] && is_pid_running "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    if is_pid_running "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    cleanup_active_state
+    info "stopped recording '$name'"
+    return 0
+  fi
+
+  cleanup_active_state
+  info "cleared stale recording marker for '$name'"
 }
 
 cmd_list() {
   local found=false
   local active=""
+  refresh_active_state
   [[ -f "$ACTIVE_FILE" ]] && active=$(cat "$ACTIVE_FILE")
 
   for logfile in "$LOG_DIR"/*.log; do
