@@ -83,11 +83,9 @@ cmd_start() {
   info "type 'exit' or press Ctrl-D to stop recording"
   echo ""
 
-  # --log-out stores terminal output
-  # --log-timing stores timing data for replay
-  # --flush reduces data loss if the session crashes
-  # --quiet suppresses start/stop banners
-  script --quiet --flush --log-out "$logfile" --log-timing "$timingfile"
+  # Older Linux script variants write terminal output to the positional file
+  # argument and timing data via -t/--timing.
+  script --quiet --flush --timing="$timingfile" "$logfile"
 
   rm -f "$ACTIVE_FILE"
 
@@ -171,7 +169,7 @@ cmd_replay() {
 
   info "replaying session '$name' (Ctrl-C to stop)"
   echo ""
-  scriptreplay --timing "$timingfile" "$logfile"
+  scriptreplay "$timingfile" "$logfile"
 }
 
 cmd_delete() {
