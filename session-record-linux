@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# session-record-linux — Record terminal sessions using Linux util-linux `script`
+#
+# Usage:
+#   session-record-linux start [name]     Start recording (name is optional, defaults to timestamp)
+#   session-record-linux stop             Stop the current recording (just type 'exit' or Ctrl-D)
+#   session-record-linux list             List all recorded sessions
+#   session-record-linux show <name>      Show a recorded session (cleaned of ANSI codes)
+#   session-record-linux raw <name>       Show raw recording
+#   session-record-linux replay <name>    Replay a session in real time
+#   session-record-linux delete <name>    Delete a session recording
+#   session-record-linux clean            Delete sessions older than 30 days
+#
+# Captures terminal output and timing data for replay.
+# Logs stored in ~/.session-logs/
+
+set -euo pipefail
+
+LOG_DIR="$HOME/.session-logs"
+ACTIVE_FILE="$LOG_DIR/.active-linux"
+
+mkdir -p "$LOG_DIR"
+
+die()  { echo "session-record-linux: error: $*" >&2; exit 1; }
+info() { echo "session-record-linux: $*"; }
+
+strip_ansi() {
+  perl -pe '
+    s/\e\[[0-9;?]*[a-zA-Z]//g;
+    s/\e\[[0-9;?]*[~^@]//g;
+    s/\e\][^\007]*\007//g;
+    s/\e\][^\033]*\e\\//g;
+    s/\e[P^_][^\033]*\e\\//g;
+    s/\e[\(\)][A-Z0-9]//g;
+    s/\e[=>NOMDEHc78]//g;
+    s/\e[^\[\]0-9]//g;
+    s/\r//g;
+  '
+}
+
+session_file() {
+  echo "$LOG_DIR/${1}.log"
+}
+
+timing_file() {
+  echo "$LOG_DIR/${1}.time"
+}
+
+file_size() {
+  du -h "$1" | cut -f1
+}
+
+file_mtime() {
+  stat -c '%y' "$1" | cut -d'.' -f1
+}
+
+require_linux_tools() {
+  command -v script >/dev/null 2>&1 || die "'script' is not installed"
+  command -v scriptreplay >/dev/null 2>&1 || die "'scriptreplay' is not installed"
+}
+
+cmd_start() {
+  local name="${1:-$(date '+%Y-%m-%d_%H%M%S')}"
+  local logfile timingfile
+  logfile=$(session_file "$name")
+  timingfile=$(timing_file "$name")
+
+  require_linux_tools
+
+  if [[ -f "$ACTIVE_FILE" ]]; then
+    local current
+    current=$(cat "$ACTIVE_FILE")
+    die "already recording session '$current'. Type 'exit' or Ctrl-D to stop it first."
+  fi
+
+  echo "$name" > "$ACTIVE_FILE"
+
+  info "recording started -> $name"
+  info "log file: $logfile"
+  info "timing file: $timingfile"
+  info "terminal output will be captured"
+  info "type 'exit' or press Ctrl-D to stop recording"
+  echo ""
+
+  # --log-out stores terminal output
+  # --log-timing stores timing data for replay
+  # --flush reduces data loss if the session crashes
+  # --quiet suppresses start/stop banners
+  script --quiet --flush --log-out "$logfile" --log-timing "$timingfile"
+
+  rm -f "$ACTIVE_FILE"
+
+  echo ""
+  info "recording stopped -> $name"
+  info "log file: $logfile ($(file_size "$logfile"))"
+  info "timing file: $timingfile ($(file_size "$timingfile"))"
+  info "view cleaned: session-record-linux show $name"
+}
+
+cmd_stop() {
+  if [[ ! -f "$ACTIVE_FILE" ]]; then
+    info "no active recording. Nothing to stop."
+    info "if you're inside a recording, just type 'exit' or press Ctrl-D."
+    return 0
+  fi
+
+  local name
+  name=$(cat "$ACTIVE_FILE")
+  info "active session: '$name'"
+  info "to stop it, type 'exit' or press Ctrl-D in the recorded shell."
+  info "the recording shell is the innermost shell you're in."
+}
+
+cmd_list() {
+  local found=false
+  local active=""
+  [[ -f "$ACTIVE_FILE" ]] && active=$(cat "$ACTIVE_FILE")
+
+  for logfile in "$LOG_DIR"/*.log; do
+    [[ -f "$logfile" ]] || continue
+    found=true
+    local name size modified marker
+    name=$(basename "$logfile" .log)
+    size=$(file_size "$logfile")
+    modified=$(file_mtime "$logfile")
+    marker=""
+    [[ "$name" == "$active" ]] && marker=" <- RECORDING"
+
+    printf "  %-30s %8s  %s%s\n" "$name" "$size" "$modified" "$marker"
+  done
+
+  if [[ "$found" == false ]]; then
+    info "no recordings found in $LOG_DIR"
+  fi
+}
+
+cmd_show() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record-linux show <name>"
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  strip_ansi < "$logfile"
+}
+
+cmd_raw() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record-linux raw <name>"
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  cat "$logfile"
+}
+
+cmd_replay() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record-linux replay <name>"
+
+  local logfile timingfile
+  logfile=$(session_file "$name")
+  timingfile=$(timing_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+  [[ -f "$timingfile" ]] || die "no timing file found: $name"
+
+  require_linux_tools
+
+  info "replaying session '$name' (Ctrl-C to stop)"
+  echo ""
+  scriptreplay --timing "$timingfile" "$logfile"
+}
+
+cmd_delete() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record-linux delete <name>"
+
+  local logfile timingfile
+  logfile=$(session_file "$name")
+  timingfile=$(timing_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  rm -f "$logfile" "$timingfile"
+  info "deleted: $name"
+}
+
+cmd_clean() {
+  local days="${1:-30}"
+  local count=0
+
+  while IFS= read -r -d '' logfile; do
+    local name
+    name=$(basename "$logfile" .log)
+    rm -f "$logfile" "$(timing_file "$name")"
+    info "deleted: $name"
+    count=$((count + 1))
+  done < <(find "$LOG_DIR" -name "*.log" -mtime +"$days" -print0 2>/dev/null)
+
+  info "cleaned $count session(s) older than $days days"
+}
+
+cmd_help() {
+  cat <<'EOF'
+session-record-linux — Record terminal sessions using Linux util-linux `script`
+
+Usage:
+  session-record-linux start [name]     Start recording (name defaults to timestamp)
+  session-record-linux stop             Show how to stop the current recording
+  session-record-linux list             List all recorded sessions
+  session-record-linux show <name>      Show a session with ANSI codes stripped
+  session-record-linux raw <name>       Show raw session recording
+  session-record-linux replay <name>    Replay a session
+  session-record-linux delete <name>    Delete a session
+  session-record-linux clean [days]     Delete sessions older than N days (default 30)
+
+Captures terminal output and separate timing data for replay.
+Logs stored in ~/.session-logs/
+
+To stop a recording, type 'exit' or press Ctrl-D in the recorded shell.
+EOF
+}
+
+cmd="${1:-}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  start)   cmd_start "$@" ;;
+  stop)    cmd_stop ;;
+  list)    cmd_list ;;
+  show)    cmd_show "$@" ;;
+  raw)     cmd_raw "$@" ;;
+  replay)  cmd_replay "$@" ;;
+  delete)  cmd_delete "$@" ;;
+  clean)   cmd_clean "$@" ;;
+  help|--help|-h) cmd_help ;;
+  "")      cmd_help ;;
+  *)       die "unknown command: $cmd. Run 'session-record-linux help' for usage." ;;
+esac
