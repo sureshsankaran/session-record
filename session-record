@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# session-record — Record terminal sessions using macOS `script`
+#
+# Usage:
+#   session-record start [name]     Start recording (name is optional, defaults to timestamp)
+#   session-record stop             Stop the current recording (just type 'exit' or Ctrl-D)
+#   session-record list             List all recorded sessions
+#   session-record show <name>      Show a recorded session (cleaned of ANSI codes)
+#   session-record raw <name>       Show raw recording
+#   session-record replay <name>    Replay a session in real time
+#   session-record delete <name>    Delete a session recording
+#   session-record clean            Delete sessions older than 30 days
+#
+# Captures everything: shell commands, SSH/telnet sessions, tmux, interactive programs.
+# Logs stored in ~/.session-logs/
+
+set -euo pipefail
+
+LOG_DIR="$HOME/.session-logs"
+ACTIVE_FILE="$LOG_DIR/.active"
+
+mkdir -p "$LOG_DIR"
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
+
+die()  { echo "session-record: error: $*" >&2; exit 1; }
+info() { echo "session-record: $*"; }
+
+strip_ansi() {
+  # Strip ANSI escape sequences, carriage returns, and collapse whitespace
+  perl -pe '
+    s/\e\[[0-9;?]*[a-zA-Z]//g;
+    s/\e\[[0-9;?]*[~^@]//g;
+    s/\e\][^\007]*\007//g;
+    s/\e\][^\033]*\e\\//g;
+    s/\e[P^_][^\033]*\e\\//g;
+    s/\e[\(\)][A-Z0-9]//g;
+    s/\e[=>NOMDEHc78]//g;
+    s/\e[^\[\]0-9]//g;
+    s/\r//g;
+  '
+}
+
+session_file() {
+  echo "$LOG_DIR/${1}.log"
+}
+
+# ─── Commands ───────────────────────────────────────────────────────────────
+
+cmd_start() {
+  local name="${1:-$(date '+%Y-%m-%d_%H%M%S')}"
+  local logfile
+  logfile=$(session_file "$name")
+
+  # Check if already recording
+  if [[ -f "$ACTIVE_FILE" ]]; then
+    local current
+    current=$(cat "$ACTIVE_FILE")
+    die "already recording session '$current'. Type 'exit' or Ctrl-D to stop it first."
+  fi
+
+  # Store active session name
+  echo "$name" > "$ACTIVE_FILE"
+
+  info "recording started → $name"
+  info "log file: $logfile"
+  info "everything you type and see will be captured"
+  info "type 'exit' or press Ctrl-D to stop recording"
+  echo ""
+
+  # -F  flush after every write (so we don't lose data on crash)
+  # -k  capture keystrokes (input) as well as output
+  # -q  quiet (no "Script started/done" banners in the terminal)
+  # On exit, clean up the active marker
+  script -Fkq "$logfile"
+
+  # script has exited — session is done
+  rm -f "$ACTIVE_FILE"
+
+  echo ""
+  info "recording stopped → $name"
+  info "log file: $logfile ($(du -h "$logfile" | cut -f1))"
+  info "view cleaned: session-record show $name"
+}
+
+cmd_stop() {
+  if [[ ! -f "$ACTIVE_FILE" ]]; then
+    info "no active recording. Nothing to stop."
+    info "if you're inside a recording, just type 'exit' or press Ctrl-D."
+    return 0
+  fi
+
+  local name
+  name=$(cat "$ACTIVE_FILE")
+  info "active session: '$name'"
+  info "to stop it, type 'exit' or press Ctrl-D in the recorded shell."
+  info "the recording shell is the innermost shell you're in."
+}
+
+cmd_list() {
+  local found=false
+  local active=""
+  [[ -f "$ACTIVE_FILE" ]] && active=$(cat "$ACTIVE_FILE")
+
+  for logfile in "$LOG_DIR"/*.log; do
+    [[ -f "$logfile" ]] || continue
+    found=true
+    local name
+    name=$(basename "$logfile" .log)
+    local size
+    size=$(du -h "$logfile" | cut -f1)
+    local modified
+    modified=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$logfile")
+
+    local marker=""
+    [[ "$name" == "$active" ]] && marker=" ← RECORDING"
+
+    printf "  %-30s %8s  %s%s\n" "$name" "$size" "$modified" "$marker"
+  done
+
+  if [[ "$found" == false ]]; then
+    info "no recordings found in $LOG_DIR"
+  fi
+}
+
+cmd_show() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record show <name>"
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  strip_ansi < "$logfile"
+}
+
+cmd_raw() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record raw <name>"
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  cat "$logfile"
+}
+
+cmd_replay() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record replay <name>"
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  info "replaying session '$name' (Ctrl-C to stop)"
+  echo ""
+  # -p plays back, -d disables real-time delays
+  script -p "$logfile"
+}
+
+cmd_delete() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record delete <name>"
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  rm -f "$logfile"
+  info "deleted: $name"
+}
+
+cmd_clean() {
+  local days="${1:-30}"
+  local count=0
+
+  while IFS= read -r -d '' logfile; do
+    local name
+    name=$(basename "$logfile" .log)
+    rm -f "$logfile"
+    info "deleted: $name"
+    count=$((count + 1))
+  done < <(find "$LOG_DIR" -name "*.log" -mtime +"$days" -print0 2>/dev/null)
+
+  info "cleaned $count session(s) older than $days days"
+}
+
+cmd_help() {
+  cat <<'EOF'
+session-record — Record terminal sessions using macOS `script`
+
+Usage:
+  session-record start [name]     Start recording (name defaults to timestamp)
+  session-record stop             Show how to stop the current recording
+  session-record list             List all recorded sessions
+  session-record show <name>      Show a session with ANSI codes stripped
+  session-record raw <name>       Show raw session recording
+  session-record replay <name>    Replay a session
+  session-record delete <name>    Delete a session
+  session-record clean [days]     Delete sessions older than N days (default 30)
+
+Captures everything: commands, output, SSH, telnet, tmux, interactive programs.
+Logs stored in ~/.session-logs/
+
+To stop a recording, type 'exit' or press Ctrl-D in the recorded shell.
+EOF
+}
+
+# ─── Main ───────────────────────────────────────────────────────────────────
+
+cmd="${1:-}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  start)   cmd_start "$@" ;;
+  stop)    cmd_stop ;;
+  list)    cmd_list ;;
+  show)    cmd_show "$@" ;;
+  raw)     cmd_raw "$@" ;;
+  replay)  cmd_replay "$@" ;;
+  delete)  cmd_delete "$@" ;;
+  clean)   cmd_clean "$@" ;;
+  help|--help|-h) cmd_help ;;
+  "")      cmd_help ;;
+  *)       die "unknown command: $cmd. Run 'session-record help' for usage." ;;
+esac
