@@ -19,6 +19,7 @@ set -euo pipefail
 
 LOG_DIR="$HOME/.session-logs"
 ACTIVE_FILE="$LOG_DIR/.active"
+ACTIVE_PID_FILE="$LOG_DIR/.active.pid"
 
 mkdir -p "$LOG_DIR"
 
@@ -46,12 +47,49 @@ session_file() {
   echo "$LOG_DIR/${1}.log"
 }
 
+cleanup_active_state() {
+  rm -f "$ACTIVE_FILE" "$ACTIVE_PID_FILE"
+}
+
+active_pid() {
+  [[ -f "$ACTIVE_PID_FILE" ]] || return 1
+  cat "$ACTIVE_PID_FILE"
+}
+
+is_pid_running() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+refresh_active_state() {
+  [[ -f "$ACTIVE_FILE" ]] || return 0
+
+  local name pid logfile
+  name=$(cat "$ACTIVE_FILE")
+  logfile=$(session_file "$name")
+  pid=$(active_pid 2>/dev/null || true)
+
+  if [[ -n "$pid" ]] && is_pid_running "$pid"; then
+    return 0
+  fi
+
+  if [[ -f "$logfile" ]] && tail -n 1 "$logfile" 2>/dev/null | grep -q '^Script done on '; then
+    cleanup_active_state
+    return 0
+  fi
+
+  cleanup_active_state
+}
+
 # ─── Commands ───────────────────────────────────────────────────────────────
 
 cmd_start() {
   local name="${1:-$(date '+%Y-%m-%d_%H%M%S')}"
   local logfile
   logfile=$(session_file "$name")
+
+  refresh_active_state
 
   # Check if already recording
   if [[ -f "$ACTIVE_FILE" ]]; then
@@ -62,6 +100,8 @@ cmd_start() {
 
   # Store active session name
   echo "$name" > "$ACTIVE_FILE"
+  echo "$$" > "$ACTIVE_PID_FILE"
+  trap cleanup_active_state EXIT INT TERM
 
   info "recording started → $name"
   info "log file: $logfile"
@@ -76,7 +116,7 @@ cmd_start() {
   script -Fkq "$logfile"
 
   # script has exited — session is done
-  rm -f "$ACTIVE_FILE"
+  cleanup_active_state
 
   echo ""
   info "recording stopped → $name"
@@ -85,6 +125,8 @@ cmd_start() {
 }
 
 cmd_stop() {
+  refresh_active_state
+
   if [[ ! -f "$ACTIVE_FILE" ]]; then
     info "no active recording. Nothing to stop."
     info "if you're inside a recording, just type 'exit' or press Ctrl-D."
@@ -101,6 +143,7 @@ cmd_stop() {
 cmd_list() {
   local found=false
   local active=""
+  refresh_active_state
   [[ -f "$ACTIVE_FILE" ]] && active=$(cat "$ACTIVE_FILE")
 
   for logfile in "$LOG_DIR"/*.log; do
