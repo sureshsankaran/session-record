@@ -6,6 +6,8 @@
 #   session-record-linux start [name]     Start recording (name is optional, defaults to timestamp)
 #   session-record-linux stop             Stop the current recording (just type 'exit' or Ctrl-D)
 #   session-record-linux list             List all recorded sessions
+#   session-record-linux stream <name>    Stream a session live from the log
+#   session-record-linux attach [name]    Attach read-only to the active/live session
 #   session-record-linux show <name>      Show a recorded session (cleaned of ANSI codes)
 #   session-record-linux raw <name>       Show raw recording
 #   session-record-linux replay <name>    Replay a session in real time
@@ -183,6 +185,35 @@ cmd_show() {
   strip_ansi < "$logfile"
 }
 
+cmd_stream() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "usage: session-record-linux stream <name>"
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  info "streaming session '$name' (Ctrl-C to stop)"
+  tail -f "$logfile" | strip_ansi
+}
+
+cmd_attach() {
+  refresh_active_state
+
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    [[ -f "$ACTIVE_FILE" ]] || die "no active recording. Usage: session-record-linux attach [name]"
+    name=$(cat "$ACTIVE_FILE")
+  fi
+
+  local logfile
+  logfile=$(session_file "$name")
+  [[ -f "$logfile" ]] || die "no recording found: $name"
+
+  info "attached read-only to session '$name' (Ctrl-C to stop)"
+  tail -f "$logfile" | strip_ansi
+}
+
 cmd_raw() {
   local name="${1:-}"
   [[ -z "$name" ]] && die "usage: session-record-linux raw <name>"
@@ -247,6 +278,8 @@ Usage:
   session-record-linux start [name]     Start recording (name defaults to timestamp)
   session-record-linux stop             Show how to stop the current recording
   session-record-linux list             List all recorded sessions
+  session-record-linux stream <name>    Stream a session live from the log
+  session-record-linux attach [name]    Attach read-only to the active/live session
   session-record-linux show <name>      Show a session with ANSI codes stripped
   session-record-linux raw <name>       Show raw session recording
   session-record-linux replay <name>    Replay a session
@@ -267,6 +300,8 @@ case "$cmd" in
   start)   cmd_start "$@" ;;
   stop)    cmd_stop ;;
   list)    cmd_list ;;
+  stream)  cmd_stream "$@" ;;
+  attach)  cmd_attach "$@" ;;
   show)    cmd_show "$@" ;;
   raw)     cmd_raw "$@" ;;
   replay)  cmd_replay "$@" ;;
