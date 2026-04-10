@@ -1,6 +1,6 @@
 # session-record
 
-Record terminal sessions using macOS `script`. Captures everything — commands, output, SSH/telnet sessions, tmux, interactive programs.
+Record terminal sessions using macOS `script`. Defaults to readable output capture for commands, output, SSH/telnet sessions, tmux, and interactive programs.
 
 ## Install
 
@@ -29,9 +29,26 @@ To stop a recording, type `exit` or press `Ctrl-D` in the recorded shell.
 
 Logs are stored in `~/.session-logs/`.
 
+## Keystroke capture
+
+By default, `session-record start` records terminal output only. This keeps
+`session-record show` readable for interactive shells such as SSH, telnet, and
+paged device CLIs.
+
+If you need raw keystroke capture for forensic debugging, enable it explicitly:
+
+```bash
+SESSION_RECORD_CAPTURE_KEYS=1 session-record start [name]
+```
+
+Raw keystroke capture uses `script -k`, which can make cleaned transcripts look
+jumbled because cursor edits, backspaces, and prompt redraws are flattened when
+ANSI control sequences are stripped.
+
 ## What it captures
 
-- All command input and output (stdout + stderr)
+- Command output and remote CLI echoes (stdout + stderr)
+- Optional raw local keystroke capture with `SESSION_RECORD_CAPTURE_KEYS=1`
 - SSH and telnet session content (both directions)
 - Interactive programs (vim, top, etc.)
 - tmux pane output (when tmux runs inside the recorded session)

@@ -14,7 +14,9 @@
 #   session-record-linux delete <name>    Delete a session recording
 #   session-record-linux clean            Delete sessions older than 30 days
 #
-# Captures terminal output and timing data for replay.
+# Captures terminal sessions with readable transcripts by default.
+# Set SESSION_RECORD_CAPTURE_KEYS=1 to also capture raw keystrokes when the
+# local util-linux `script` supports input logging.
 # Logs stored in ~/.session-logs/
 
 set -euo pipefail
@@ -27,6 +29,11 @@ mkdir -p "$LOG_DIR"
 
 die()  { echo "session-record-linux: error: $*" >&2; exit 1; }
 info() { echo "session-record-linux: $*"; }
+
+capture_keys_enabled() {
+  local value="${SESSION_RECORD_CAPTURE_KEYS:-0}"
+  [[ "$value" == "1" || "$value" == "true" || "$value" == "yes" ]]
+}
 
 strip_ansi() {
   perl -pe '
@@ -50,6 +57,10 @@ timing_file() {
   echo "$LOG_DIR/${1}.time"
 }
 
+input_file() {
+  echo "$LOG_DIR/${1}.input"
+}
+
 file_size() {
   du -h "$1" | cut -f1
 }
@@ -61,6 +72,10 @@ file_mtime() {
 require_linux_tools() {
   command -v script >/dev/null 2>&1 || die "'script' is not installed"
   command -v scriptreplay >/dev/null 2>&1 || die "'scriptreplay' is not installed"
+}
+
+supports_input_logging() {
+  script --help 2>&1 | grep -q -- '--log-in'
 }
 
 cleanup_active_state() {
@@ -100,9 +115,10 @@ refresh_active_state() {
 
 cmd_start() {
   local name="${1:-$(date '+%Y-%m-%d_%H%M%S')}"
-  local logfile timingfile
+  local logfile timingfile inputfile
   logfile=$(session_file "$name")
   timingfile=$(timing_file "$name")
+  inputfile=$(input_file "$name")
 
   require_linux_tools
   refresh_active_state
@@ -120,18 +136,35 @@ cmd_start() {
   info "recording started -> $name"
   info "log file: $logfile"
   info "timing file: $timingfile"
-  info "terminal output will be captured"
+  if capture_keys_enabled; then
+    if supports_input_logging; then
+      info "raw keystrokes and terminal output will be captured"
+      info "input log file: $inputfile"
+    else
+      die "SESSION_RECORD_CAPTURE_KEYS=1 requires a util-linux 'script' with --log-in support"
+    fi
+  else
+    info "terminal output will be captured"
+    info "set SESSION_RECORD_CAPTURE_KEYS=1 if you need raw keystroke capture"
+  fi
   info "type 'exit' or press Ctrl-D to stop recording"
   echo ""
 
   # Older Linux script variants write terminal output to the positional file
   # argument and timing data via -t/--timing.
-  script --quiet --flush --timing="$timingfile" "$logfile"
+  if capture_keys_enabled; then
+    script --quiet --flush --timing="$timingfile" --log-in="$inputfile" "$logfile"
+  else
+    script --quiet --flush --timing="$timingfile" "$logfile"
+  fi
 
   echo ""
   info "recording stopped -> $name"
   info "log file: $logfile ($(file_size "$logfile"))"
   info "timing file: $timingfile ($(file_size "$timingfile"))"
+  if [[ -f "$inputfile" ]]; then
+    info "input log file: $inputfile ($(file_size "$inputfile"))"
+  fi
   info "view cleaned: session-record-linux show $name"
 }
 
@@ -246,12 +279,13 @@ cmd_delete() {
   local name="${1:-}"
   [[ -z "$name" ]] && die "usage: session-record-linux delete <name>"
 
-  local logfile timingfile
+  local logfile timingfile inputfile
   logfile=$(session_file "$name")
   timingfile=$(timing_file "$name")
+  inputfile=$(input_file "$name")
   [[ -f "$logfile" ]] || die "no recording found: $name"
 
-  rm -f "$logfile" "$timingfile"
+  rm -f "$logfile" "$timingfile" "$inputfile"
   info "deleted: $name"
 }
 
@@ -262,7 +296,7 @@ cmd_clean() {
   while IFS= read -r -d '' logfile; do
     local name
     name=$(basename "$logfile" .log)
-    rm -f "$logfile" "$(timing_file "$name")"
+    rm -f "$logfile" "$(timing_file "$name")" "$(input_file "$name")"
     info "deleted: $name"
     count=$((count + 1))
   done < <(find "$LOG_DIR" -name "*.log" -mtime +"$days" -print0 2>/dev/null)

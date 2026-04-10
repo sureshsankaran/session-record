@@ -14,7 +14,8 @@
 #   session-record delete <name>    Delete a session recording
 #   session-record clean            Delete sessions older than 30 days
 #
-# Captures everything: shell commands, SSH/telnet sessions, tmux, interactive programs.
+# Captures terminal sessions with readable transcripts by default.
+# Set SESSION_RECORD_CAPTURE_KEYS=1 to also capture raw keystrokes.
 # Logs stored in ~/.session-logs/
 
 set -euo pipefail
@@ -29,6 +30,11 @@ mkdir -p "$LOG_DIR"
 
 die()  { echo "session-record: error: $*" >&2; exit 1; }
 info() { echo "session-record: $*"; }
+
+capture_keys_enabled() {
+  local value="${SESSION_RECORD_CAPTURE_KEYS:-0}"
+  [[ "$value" == "1" || "$value" == "true" || "$value" == "yes" ]]
+}
 
 strip_ansi() {
   # Strip ANSI escape sequences, carriage returns, and collapse whitespace
@@ -107,15 +113,25 @@ cmd_start() {
 
   info "recording started → $name"
   info "log file: $logfile"
-  info "everything you type and see will be captured"
+  if capture_keys_enabled; then
+    info "raw keystrokes and terminal output will be captured"
+  else
+    info "terminal output will be captured"
+    info "set SESSION_RECORD_CAPTURE_KEYS=1 if you need raw keystroke capture"
+  fi
   info "type 'exit' or press Ctrl-D to stop recording"
   echo ""
 
   # -F  flush after every write (so we don't lose data on crash)
-  # -k  capture keystrokes (input) as well as output
   # -q  quiet (no "Script started/done" banners in the terminal)
+  # -k  capture raw keystrokes as well as output; useful for forensics but can
+  #     make cleaned transcripts hard to read because cursor edits get flattened
   # On exit, clean up the active marker
-  script -Fkq "$logfile"
+  if capture_keys_enabled; then
+    script -Fkq "$logfile"
+  else
+    script -Fq "$logfile"
+  fi
 
   # script has exited — session is done
   cleanup_active_state
